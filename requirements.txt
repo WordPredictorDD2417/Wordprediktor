@@ -1,0 +1,6 @@
+torch
+transformers
+datasets
+flask
+numpy
+tqdm
