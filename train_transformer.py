@@ -1,19 +1,21 @@
 """
-Train (fine-tune) GPT-2 small on WikiText-2 for causal language modeling.
+Train (fine-tune) GPT-2 small on WikiText-103 (10% subset, ~10M tokens)
+for causal language modeling.
 
 Usage:
     python train_transformer.py                        # full training
     python train_transformer.py --epochs 1 --debug     # quick debug run on tiny subset
     python train_transformer.py --resume               # resume from last checkpoint
+    python train_transformer.py --data_pct 20           # use 20% of WikiText-103
 
-The trained model and tokenizer are saved to  models/gpt2-wikitext2/
+The trained model and tokenizer are saved to  models/gpt2-wikitext103/
 """
 
 import argparse
 import os
 import math
 
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -27,30 +29,39 @@ from transformers import (
 # Config
 # ---------------------------------------------------------------------------
 MODEL_NAME = "gpt2"                       # 124M params, BPE tokenizer
-OUTPUT_DIR = os.path.join("models", "gpt2-wikitext2")
+OUTPUT_DIR = os.path.join("models", "gpt2-wikitext103")
 BLOCK_SIZE = 256                          # context window for training
 DEFAULT_EPOCHS = 3
 DEFAULT_BATCH_SIZE = 8                    # per-device; adjust to your GPU RAM
+DEFAULT_DATA_PCT = 10                     # % of WikiText-103 to use (10% ≈ 10M tokens)
 LEARNING_RATE = 5e-5
-WARMUP_STEPS = 500
-SAVE_STEPS = 2000
-LOGGING_STEPS = 200
+WARMUP_STEPS = 300
+SAVE_STEPS = 500
+LOGGING_STEPS = 100
 
 
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
-def load_and_tokenize(tokenizer, debug: bool = False):
-    """Load WikiText-2 and tokenize into fixed-length blocks."""
-
-    print("Loading WikiText-2 (raw) …")
-    raw = load_dataset("wikitext", "wikitext-2-raw-v1")
+def load_and_tokenize(tokenizer, data_pct: int = DEFAULT_DATA_PCT, debug: bool = False):
+    """Load WikiText-103 (subset) and tokenize into fixed-length blocks."""
 
     if debug:
-        # Use a tiny slice for fast iteration
+        # Use a tiny slice of WikiText-2 for fast iteration
+        print("Loading WikiText-2 (debug mode) …")
+        raw = load_dataset("wikitext", "wikitext-2-raw-v1")
         raw["train"] = raw["train"].select(range(5000))
         raw["validation"] = raw["validation"].select(range(500))
-        raw["test"] = raw["test"].select(range(500))
+    else:
+        pct = max(1, min(100, data_pct))
+        print(f"Loading WikiText-103 ({pct}% subset) …")
+        train_raw = load_dataset(
+            "wikitext", "wikitext-103-raw-v1", split=f"train[:{pct}%]"
+        )
+        val_raw = load_dataset(
+            "wikitext", "wikitext-103-raw-v1", split="validation"
+        )
+        raw = DatasetDict({"train": train_raw, "validation": val_raw})
 
     # --- tokenize --------------------------------------------------------
     def tokenize_fn(examples):
@@ -96,10 +107,14 @@ def load_and_tokenize(tokenizer, debug: bool = False):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune GPT-2 on WikiText-2")
+    parser = argparse.ArgumentParser(
+        description="Fine-tune GPT-2 on WikiText-103 (subset)"
+    )
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
+    parser.add_argument("--data_pct", type=int, default=DEFAULT_DATA_PCT,
+                        help="Percentage of WikiText-103 to use (default: 10)")
     parser.add_argument("--debug", action="store_true",
                         help="Use a tiny data slice for fast iteration")
     parser.add_argument("--resume", action="store_true",
@@ -115,7 +130,7 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
 
     # --- data ------------------------------------------------------------
-    lm_dataset = load_and_tokenize(tokenizer, debug=args.debug)
+    lm_dataset = load_and_tokenize(tokenizer, data_pct=args.data_pct, debug=args.debug)
     print(f"Train examples : {len(lm_dataset['train']):,}")
     print(f"Val   examples : {len(lm_dataset['validation']):,}")
 
@@ -141,7 +156,7 @@ def main():
         weight_decay=0.01,
         logging_steps=LOGGING_STEPS,
         save_steps=SAVE_STEPS,
-        save_total_limit=2,
+        save_total_limit=3,
         eval_strategy="steps",
         eval_steps=SAVE_STEPS,
         load_best_model_at_end=True,
