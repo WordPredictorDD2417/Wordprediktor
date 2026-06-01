@@ -94,41 +94,64 @@ class TransformerPredictor:
 
     def predict(self, text, prefix="", top_k=5, temperature=1.0):
         words = tokenize(text)
-        words = words[-self.seq_len:]
-
-        ids = [self.word2idx.get(word, self.word2idx["<UNK>"]) for word in words]
-
-        while len(ids) < self.seq_len:
-            ids.insert(0, self.word2idx["<PAD>"])
-
-        x = torch.tensor([ids], dtype=torch.long).to(self.device)
-
-        with torch.no_grad():
-            logits = self.model(x)
-            logits = logits / temperature
-            probs = torch.softmax(logits, dim=-1)
-
-        # Get more than top_k to account for filtered words
-        top_probs, top_ids = torch.topk(probs, min(probs.size(-1), top_k * 5))
-
         results = []
         seen = set()
 
-        for prob, idx in zip(top_probs[0], top_ids[0]):
-            word = self.idx2word[idx.item()]
+        # --- Try the model if we have context ---
+        if words:
+            model_words = words[-self.seq_len:]
+            ids = [self.word2idx.get(word, self.word2idx["<UNK>"]) for word in model_words]
 
-            # Filter out <UNK>, <PAD> and ensure it matches prefix if provided
-            if word in ["<PAD>", "<UNK>"]:
-                continue
-                
-            if prefix and not word.startswith(prefix.lower()):
-                continue
+            while len(ids) < self.seq_len:
+                ids.insert(0, self.word2idx["<PAD>"])
 
-            if word not in seen:
-                results.append(word)
-                seen.add(word)
+            x = torch.tensor([ids], dtype=torch.long).to(self.device)
 
-            if len(results) >= top_k:
-                break
+            with torch.no_grad():
+                logits = self.model(x)
+                logits = logits / temperature
+                probs = torch.softmax(logits, dim=-1)
+
+            top_probs, top_ids = torch.topk(probs, min(probs.size(-1), top_k * 10))
+
+            for prob, idx in zip(top_probs[0], top_ids[0]):
+                word = self.idx2word[idx.item()]
+
+                if word in ("<PAD>", "<UNK>"):
+                    continue
+                if prefix and not word.startswith(prefix.lower()):
+                    continue
+                if word not in seen:
+                    results.append(word)
+                    seen.add(word)
+                if len(results) >= top_k:
+                    break
+
+        # --- Fallback: prefix match + Levenshtein from vocab ---
+        if len(results) < top_k and prefix:
+            import Levenshtein
+            prefix_lower = prefix.lower()
+            vocab = [w for w in self.word2idx if w not in ("<PAD>", "<UNK>") and w not in seen]
+
+            # 1) Words that start with the prefix (cheap, best UX)
+            prefix_matches = [w for w in vocab if w.startswith(prefix_lower)]
+            prefix_matches.sort(key=len)  # shorter = more likely what they mean
+            for w in prefix_matches:
+                results.append(w)
+                seen.add(w)
+                if len(results) >= top_k:
+                    break
+
+            # 2) Still short? Rank remaining vocab by Levenshtein distance
+            if len(results) < top_k:
+                remaining = [w for w in vocab if w not in seen]
+                scored = [(Levenshtein.distance(prefix_lower, w), w) for w in remaining]
+                scored.sort(key=lambda x: (x[0], x[1]))
+                for _, w in scored:
+                    results.append(w)
+                    seen.add(w)
+                    if len(results) >= top_k:
+                        break
 
         return results
+
