@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import re
-import Levenshtein
 
 class WordTransformer(nn.Module):
     def __init__(
@@ -95,11 +94,6 @@ class TransformerPredictor:
 
     def predict(self, text, prefix="", top_k=5, temperature=1.0):
         words = tokenize(text)
-
-        # Fallback: no context words → rank vocabulary by Levenshtein distance
-        if not words and prefix:
-            return self._levenshtein_fallback(prefix, top_k)
-
         words = words[-self.seq_len:]
 
         ids = [self.word2idx.get(word, self.word2idx["<UNK>"]) for word in words]
@@ -138,13 +132,3 @@ class TransformerPredictor:
                 break
 
         return results
-
-    def _levenshtein_fallback(self, prefix, top_k=5):
-        """Pick the closest vocabulary words by Levenshtein distance to the prefix."""
-        prefix_lower = prefix.lower()
-        vocab = [w for w in self.word2idx if w not in ("<PAD>", "<UNK>")]
-
-        scored = [(Levenshtein.distance(prefix_lower, w), w) for w in vocab]
-        scored.sort(key=lambda x: (x[0], x[1]))
-
-        return [w for _, w in scored[:top_k]]
