@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPrediktor</title>
+    <meta name="description" content="Real-time word prediction powered by N-grams and GPT-2 Transformer.">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app">
+        <header>
+            <h1>WordPrediktor</h1>
+            <p>N-gram · Transformer · Autocorrect</p>
+        </header>
+
+        <!-- Model toggle -->
+        <div class="model-toggle" id="model-toggle">
+            <button class="toggle-btn active" data-model="ngram" id="btn-ngram">
+                <span class="toggle-dot"></span>
+                N-gram
+            </button>
+            {% if has_transformer %}
+            <button class="toggle-btn" data-model="transformer" id="btn-transformer">
+                <span class="toggle-dot"></span>
+                Transformer
+            </button>
+            {% else %}
+            <button class="toggle-btn disabled" data-model="transformer" id="btn-transformer" disabled title="Transformer model not loaded">
+                <span class="toggle-dot"></span>
+                Transformer
+            </button>
+            {% endif %}
+        </div>
+
+        <div class="input-wrap">
+            <textarea id="input" placeholder="Start typing…" autofocus></textarea>
+        </div>
+
+        <!-- Keyboard-style suggestion bar -->
+        <div class="suggestion-bar" id="bar">
+            <span class="bar-empty">Type to see suggestions</span>
+        </div>
+
+    </div>
+
+    <script>
+        const input = document.getElementById('input');
+        const bar = document.getElementById('bar');
+        const toggleBtns = document.querySelectorAll('.toggle-btn:not(.disabled)');
+
+        let currentModel = 'ngram';
+        let timer;
+        let ctrl;
+
+        // --- Model toggle ---
+        toggleBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentModel = btn.dataset.model;
+
+                // Re-fetch predictions with new model
+                if (input.value) {
+                    clearTimeout(timer);
+                    if (ctrl) ctrl.abort();
+                    fetchPredictions();
+                }
+            });
+        });
+
+        // --- Input listener ---
+        input.addEventListener('input', () => {
+            clearTimeout(timer);
+            if (ctrl) ctrl.abort();
+
+            if (!input.value) {
+                bar.innerHTML = '<span class="bar-empty">Type to see suggestions</span>';
+                return;
+            }
+
+            timer = setTimeout(fetchPredictions, 150);
+        });
+
+        // --- Fetch predictions ---
+        async function fetchPredictions() {
+            const val = input.value;
+            let context = val, prefix = '';
+
+            if (!val.endsWith(' ')) {
+                const i = val.lastIndexOf(' ');
+                if (i !== -1) {
+                    context = val.substring(0, i + 1);
+                    prefix = val.substring(i + 1);
+                } else {
+                    context = '';
+                    prefix = val;
+                }
+            }
+
+            ctrl = new AbortController();
+
+            try {
+                const res = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: context, prefix: prefix, model: currentModel }),
+                    signal: ctrl.signal
+                });
+                const data = await res.json();
+
+                // Merge suggestions + corrections, deduplicated
+                const seen = new Set();
+                const all = [];
+                for (const w of [...(data.suggestions || []), ...(data.corrections || [])]) {
+                    const k = w.toLowerCase();
+                    if (!seen.has(k)) { seen.add(k); all.push(w); }
+                }
+
+                if (all.length === 0) {
+                    bar.innerHTML = '<span class="bar-empty">No suggestions</span>';
+                } else {
+                    bar.innerHTML = '';
+                    all.slice(0, 8).forEach(w => {
+                        const btn = document.createElement('button');
+                        btn.className = 'sug-key';
+                        btn.textContent = w;
+                        btn.onclick = () => apply(w);
+                        bar.appendChild(btn);
+                    });
+                }
+
+            } catch (e) {
+                if (e.name !== 'AbortError') console.error(e);
+            }
+        }
+
+        // --- Apply suggestion ---
+        function apply(word) {
+            const val = input.value;
+            if (!val.endsWith(' ')) {
+                const i = val.lastIndexOf(' ');
+                input.value = (i !== -1 ? val.substring(0, i + 1) : '') + word + ' ';
+            } else {
+                input.value = val + word + ' ';
+            }
+            input.focus();
+            clearTimeout(timer);
+            timer = setTimeout(fetchPredictions, 150);
+        }
+    </script>
+</body>
+</html>
